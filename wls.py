@@ -1,9 +1,7 @@
 import sys
 import os
 import re
-import json
 import bs4
-import enum
 import requests
 import concurrent.futures
 from threading import Lock
@@ -82,13 +80,22 @@ class Option:
     def has_value(self) -> bool:
         return self._has_value
 
-    def help_string(self, left_width: int = 20) -> str:
-        left: str = '{string:{width}}'.format(string=self._key, width=left_width)
-        return f'{left}: {self._desc}'
+    def print_help(self, indent: int = 0, left_width: int = 21):
+        desc_list: list = self._desc.split('\n')
+        left_width = max(0, left_width)
+        indent = max(0, indent)
+        left: str = '{string:{width}}'.format(string=f'{self._key} {"(Required)" if self._required else "[Optional]"}', width=left_width)
+        print(f'{" " * indent}{left}: {desc_list[0]}')
+        if len(desc_list) > 1:
+            for idx in range(1, len(desc_list)):
+                desc: str = desc_list[idx]
+                print(f'{" " * (indent + left_width)}: {desc}')
     
-    def value_string(self, left_width: int = 20) -> str:
+    def print_keyvalue(self, indent: int = 0, left_width: int = 12) -> str:
+        indent = max(0, indent)
+        left_width = max(0, left_width)
         left: str = '{string:{width}}'.format(string=self._key, width=left_width)
-        return f'{left}: {self._value}'
+        print(f'{" " * indent}{left}: {self._value}')
     
     def reset(self):
         self._value = None
@@ -137,9 +144,10 @@ class StringOption(Option):
         return super()._internal_validate(val)
     
 
-def url_validate(url: str) -> bool:
-        if not isinstance(url, str):
+def url_validate(input_url: str, browse: bool = False) -> bool:
+        if not isinstance(input_url, str):
             return False
+        url: str = input_url
         if url.upper().startswith('http://'.upper()):
             url = url[len('http://'):]
         elif url.upper().startswith('https://'.upper()):
@@ -172,6 +180,25 @@ def url_validate(url: str) -> bool:
         for ch in host:
             if not ch.isalnum() and ch not in valids:
                 return False
+
+        if browse:
+            res: requests.Response = None
+            headers = requests.utils.default_headers()
+            headers.update(
+                {
+                    'User-Agent': 'Mozilla/5.0',
+                }
+            )
+            try:
+                res = requests.get(input_url, timeout=5, headers=headers, allow_redirects=False)
+            except Exception as ex:
+                print(f'Exception:{ex}')
+                return False
+            
+            if res.status_code != 200:
+                return False
+            if 'text/html' not in res.headers['content-type']:
+                return False
         return True
 
 def url_root(url: str) -> str:
@@ -196,7 +223,9 @@ def url_root(url: str) -> str:
     url = url.rstrip('/').lstrip('/')
     tmp: list = url.split('/')
     url = tmp[0].rstrip('/').lstrip('/')
-    return f'{scheme}{url}'
+    url = f'{scheme}{url}'
+
+    return url
     
 def url_hostname(url: str) -> str:
     if not isinstance(url, str):
@@ -222,118 +251,113 @@ def url_hostname(url: str) -> str:
     url = tmp[0].rstrip('/').lstrip('/')
     return url
 
-def parse_url(arg: tuple) -> dict: #Return number of parsed words
+def parse_links(arg: tuple) -> list:
     if arg is None:
-        return None
+        return {}
     url: str = arg[0]
-    fork: bool = arg[1]
+    fork: bool = arg[1] 
+
+    urls: list = None
     if len(arg) > 2:
-        url_words: dict = arg[2]
-        if url_words is None:
-            url_words: dict = {}
-    else:
-        url_words: dict = {}    
-
-    dictionary: enchant.Dict = None
-    if len(arg) > 3:
-        dictionary = arg[3]
-        if dictionary is None:
-            dictionary = enchant.Dict("en_US")
-    else:
-        dictionary = enchant.Dict("en_US")
-
+        urls = arg[2]
+    if not isinstance(urls, list):
+        urls = []
+    
     file: str = None
-    if len(arg) > 4:
-        file = arg[4]
+    if len(arg) > 3:
+        file = arg[3]
     
     locker: Lock = None
-    if len(arg) > 5:
-        locker = arg[5]
+    if len(arg) > 4:
+        locker = arg[4]
         if locker is None:
-            locker = Lock()
+            locker = multiprocessing.Manager().Lock()
     else:
-        locker = Lock()
+        locker = multiprocessing.Manager().Lock()
     
     if url is None or not isinstance(url, str):
-        return url_words
-    
-    words: dict = None
-    if url in url_words:
-        words = url_words[url]
-    else:
-        words = {}
-        url_words[url] = words
-    
-    print(f'Parsing {url}...')
+        return urls
+
     res: requests.Response = None
+    headers = requests.utils.default_headers()
+    headers.update(
+        {
+            'User-Agent': 'Mozilla/5.0',
+        }
+    )
     try:
-        res = requests.get(url, timeout=5)
+        res = requests.get(url, timeout=5, headers=headers, allow_redirects=False)
     except Exception as ex:
         print(f'Exception:{ex}')
-        return url_words
+        return urls
     
     if res.status_code != 200:
-        return url_words
+        return urls
+    if 'text/html' not in res.headers['content-type']:
+        return urls
     if res.text is None or len(res.text) <= 0:
-        return url_words
+        return urls
     
     parser: bs4.BeautifulSoup = bs4.BeautifulSoup(res.text, 'html.parser')    
-    text: str = parser.get_text()
-    if text is None or len(text) <= 0:
-        return words
-    text = text.lstrip().rstrip()
-    texts: list = text.split()
-    w: str = ''
-    for w in texts:
-        if not w.isalpha():
-            continue
-        if not dictionary.check(w):
-            continue
-        for ww in [w.lower(), w.upper(), w.capitalize()]:
-            if ww in words:
-                words[ww] += 1
-            else:
-                words[ww] = 1
-    if file is not None:
+    anchors = parser.find_all('a')
+    link: str = None
+    if anchors is None:
+        return urls
+    for a in anchors:
         try:
-            with locker:
-                with open(f'{url_hostname(url)}.{file}','w') as json_file:
-                    json_file.write(json.dumps(url_words, sort_keys=True, indent=4))
-        except Exception as ex:
-            #print(f'Cannot save words to {_output.value} due to error:{ex}')
-            #print(url_words)
-            #exit(0)
-            pass
-    if fork:
-        for anchor in parser.find_all('a'):
-            link: str = None
-            try:
-                link = anchor['href']
-            except:
-                link = None
-            if link is None:
+            link = a['href']
+        except:
+            link = None
+        if link is None:
+            continue
+        my_root: str = url
+        pos: int = -1
+        pos_list: list = []
+        for ch in ['?', '#']:
+            pos = url.find(ch)
+            if pos != -1:
+                pos_list.append(pos)
+        if len(pos_list) > 0:
+            pos = min(pos_list)
+            my_root = url[:pos]
+        my_root = my_root.rsplit('/')
+        link = link.strip()
+        if (not link.upper().startswith('http://'.upper())) and (not  link.upper().startswith('https://'.upper())) and (not  link.upper().startswith('www.'.upper())):
+            if link.startswith('#'):
                 continue
-            link = link.rstrip('/')
-            my_root: str = url_root(url)
-            if (not link.upper().startswith('http://'.upper())) and (not  link.upper().startswith('https://'.upper())) and (not  link.upper().startswith('www.'.upper())):
-                link = link.lstrip('/')
-                if link in ['#', '?']:
-                    link = ''
-                link = f'{my_root}/{link}'.rstrip('/')
-            your_root: str = url_root(link)
-            if my_root.upper() == your_root.upper():
-                if url != link and link not in url_words:
-                    url_words[link] = {}
-                    uws = parse_url((link, fork, url_words, dictionary, file, locker))
-                    if uws is not None:
-                        url_words = url_words | uws
-    return url_words
+            link = f'{my_root}/{link.lstrip("/")}'.rstrip('/')
+        link = link.rstrip('/')
+        if not url_validate(link):
+            urls.append(link)
+            continue
+
+        if link.upper() == url.upper():
+            continue
+
+        with locker:
+            if link in urls:
+                continue
+            urls.append(link)
+            print(link)
+        
+        if file is not None:
+            try:
+                with locker:
+                    with open(file,'a') as txt_file:
+                        txt_file.write(f'{link}\n')
+            except Exception as ex:
+                pass
+        
+        if fork:
+            if url_validate(link, True):
+                urls += parse_links((link, fork, urls, file, locker))
+    return urls
 
 if __name__=="__main__":
-    _verbose: BooleanOption = BooleanOption("--verbose", "Verbose output", True)
-    _fork: BooleanOption = BooleanOption("--fork", "Also parse any encountered link", True)
-    _input: StringOption = StringOption("--in", True, "Input file which contains words will be merged with results", None)
-    _output: StringOption = StringOption("--out", "Output file name", None)
+    _verbose: BooleanOption = BooleanOption("--verbose", False, "Verbose output", True)
+    _fork: BooleanOption = BooleanOption("--fork", False, "Also browse any encountered link", True)
+    _input: StringOption = StringOption("--in", False, "Input file which contains URL(s) to browse", None)
+    _output: StringOption = StringOption("--out", False, "Output file which output will be written to", None)
 
     option_list : list = [
         _verbose,
@@ -342,10 +366,10 @@ if __name__=="__main__":
         _output
     ]
     def usage():
-        print(f'Usage: {os.path.basename(sys.argv[0])} [options] urls')
-        print('  [options]')
+        print(f'Usage: {os.path.basename(sys.argv[0])} [OPTIONS] urls')
+        print('  [OPTIONS]')
         for opt in option_list:
-            print(f'  {opt.help_string()}')
+            opt.print_help(2)
     
     if len(sys.argv) < 2:
         usage()
@@ -375,53 +399,66 @@ if __name__=="__main__":
                     exit(1)                
         if arg is not None:
             if url_validate(arg):
-                urls.append(url_root(arg))
+                urls.append(arg)
             else:
                 print(f'Invalid url:{arg}')
                 exit(1)
+    require_reinput: bool = False
+    for opt in option_list:
+        if opt.required and not opt.has_value:
+            require_reinput = True
+            print(f'{opt.keyword} is mandatory but not specified')
+    if require_reinput:
+        exit(1)
     
     if _verbose.has_value and _verbose.value == True:
         has_opt: bool = False
         for opt in option_list:
             if opt.has_value:
                 has_opt = True
-                print(f'  {opt.value_string()}')
+                break
         if has_opt:
+            print(f'  [OPTIONS]')
+            for opt in option_list:
+                if opt.has_value:
+                    opt.print_keyvalue(2)
             print()
-
-    url_words: dict = {}
+    
     if _input.has_value and os.path.exists(_input.value):
         try:
-            with open(_output.value,'r+') as json_file: 
-                obj = json.load(json_file)
-                if obj:
-                    url_words = obj
+            with open(_output.value,'r') as txt_file: 
+                line: str = txt_file.readline()
+                while line:
+                    line = line.strip().rstrip('/')
+                    if url_validate(line):
+                        if line not in urls:
+                            urls.append(line)
+                    else:
+                        print(f'[W]:url is not valid:{line}')
+                    line = txt_file.readline()
         except Exception as ex:
             print(f'Cannot open input file:{_input.value}')
-            #exit(1)
-    dictionary: enchant.Dict = None
-    if _language.has_value:
-        dictionary = enchant.Dict(_language.value)
-    else:
-        dictionary = enchant.Dict("en_US")
-    urls = set(url_words.keys()) ^ set(urls)
+            exit(1)
+    if len(urls) <= 0:
+        print('No url to browse')
+        exit(0)
+    
     manager: multiprocessing.Manager = multiprocessing.Manager()
     locker: multiprocessing.Lock = manager.Lock()
     with concurrent.futures.ProcessPoolExecutor(max_workers=max(2,min(61, len(urls)))) as executor:
-        futures = { executor.submit(parse_url, (url, _fork.value if _fork.has_value else False, url_words, dictionary, _output.value if _output.has_value else None, locker)) : url for url in urls}
+        futures = { executor.submit(parse_links, (url, _fork.value if _fork.has_value else False, urls, _output.value if _output.has_value else None, locker)) : url for url in urls}
         url: str = ''
         for future in concurrent.futures.as_completed(futures):
-            #url = futures[future]
-            uws = future.result()
-            if uws is None:
-                print(f'Parsed url {url} failed')
-            else:
-                url_words = url_words | uws
-                if _output.has_value and len(_output.value) > 0:
+            url = futures[future]
+            urls = future.result()
+            if url:
+                if _output.has_value:
                     try:
-                        with open(_output.value,'w') as json_file:
-                            json_file.write(json.dumps(url_words, sort_keys=True, indent=4))
+                        with locker:
+                            with open(f'{_output.value}','a') as txt_file:
+                                txt_file.write(f'{url}\n')
                     except Exception as ex:
-                        print(f'Cannot save words to {_output.value} due to error:{ex}')
-                        print(url_words)
-                        #exit(0)
+                        print(url)
+                else:
+                    with locker:
+                        print(url)
