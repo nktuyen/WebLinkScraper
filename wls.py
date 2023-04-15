@@ -190,6 +190,8 @@ def url_validate(input_url: str, browse: bool = False) -> bool:
                 }
             )
             try:
+                res = requests.get(input_url, timeout=5, allow_redirects=False)
+            except requests.ConnectionError:
                 res = requests.get(input_url, timeout=5, headers=headers, allow_redirects=False)
             except Exception as ex:
                 print(f'Exception:{ex}')
@@ -286,6 +288,8 @@ def parse_links(arg: tuple) -> list:
         }
     )
     try:
+        res = requests.get(url, timeout=5, allow_redirects=False)
+    except requests.ConnectionError as err:
         res = requests.get(url, timeout=5, headers=headers, allow_redirects=False)
     except Exception as ex:
         print(f'Exception:{ex}')
