@@ -279,7 +279,12 @@ def parse_links(arg: tuple) -> list:
     
     if url is None or not isinstance(url, str):
         return urls
+    
+    if url in urls:
+        print(f'Ignored {url}')
+        return urls
 
+    print(url)
     res: requests.Response = None
     headers = requests.utils.default_headers()
     headers.update(
@@ -353,24 +358,24 @@ def parse_links(arg: tuple) -> list:
                 pass
         
         if fork:
-            if url_validate(link, True):
-                urls += parse_links((link, fork, urls, file, locker))
+            urls += parse_links((link, fork, urls, file, locker))
     return urls
 
 if __name__=="__main__":
     _verbose: BooleanOption = BooleanOption("--verbose", False, "Verbose output", True)
     _fork: BooleanOption = BooleanOption("--fork", False, "Also browse any encountered link", True)
-    _input: StringOption = StringOption("--in", False, "Input file which contains URL(s) to browse", None)
-    _output: StringOption = StringOption("--out", False, "Output file which output will be written to", None)
+    _exclude: StringOption = StringOption("--exclude", False, "Input file which contains list of URL(s) will be excluded", None)
+    _output: StringOption = StringOption("--output", False, "Output file which parsed URL(s) will be written to", None)
 
     option_list : list = [
         _verbose,
         _fork,
-        _input,
+        _exclude,
         _output
     ]
-    def usage():
+    def usage(indent: int = 2, left_width: int = 21):
         print(f'Usage: {os.path.basename(sys.argv[0])} [OPTIONS] urls')
+        print('{}{string:{width}}: URL(s) to browse'.format(" " * indent, string='URLS', width=left_width))
         print('  [OPTIONS]')
         for opt in option_list:
             opt.print_help(2)
@@ -427,21 +432,21 @@ if __name__=="__main__":
                 if opt.has_value:
                     opt.print_keyvalue(2)
             print()
-    
-    if _input.has_value and os.path.exists(_input.value):
+    ignore_urls: list = []
+    if _exclude.has_value and os.path.exists(_exclude.value):
         try:
-            with open(_output.value,'r') as txt_file: 
+            with open(_exclude.value,'r') as txt_file: 
                 line: str = txt_file.readline()
                 while line:
                     line = line.strip().rstrip('/')
                     if url_validate(line):
-                        if line not in urls:
-                            urls.append(line)
+                        if line not in ignore_urls:
+                            ignore_urls.append(line)
                     else:
                         print(f'[W]:url is not valid:{line}')
                     line = txt_file.readline()
         except Exception as ex:
-            print(f'Cannot open input file:{_input.value}')
+            print(f'Cannot open file:{_exclude.value}')
             exit(1)
     if len(urls) <= 0:
         print('No url to browse')
@@ -450,7 +455,7 @@ if __name__=="__main__":
     manager: multiprocessing.Manager = multiprocessing.Manager()
     locker: multiprocessing.Lock = manager.Lock()
     with concurrent.futures.ProcessPoolExecutor(max_workers=max(2,min(61, len(urls)))) as executor:
-        futures = { executor.submit(parse_links, (url, _fork.value if _fork.has_value else False, urls, _output.value if _output.has_value else None, locker)) : url for url in urls}
+        futures = { executor.submit(parse_links, (url, _fork.value if _fork.has_value else False, ignore_urls, _output.value if _output.has_value else None, locker)) : url for url in urls}
         url: str = ''
         for future in concurrent.futures.as_completed(futures):
             url = futures[future]
