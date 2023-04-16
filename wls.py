@@ -253,17 +253,17 @@ def url_hostname(url: str) -> str:
     url = tmp[0].rstrip('/').lstrip('/')
     return url
 
-def parse_links(arg: tuple) -> list:
+def parse_links(arg: tuple) -> set:
     if arg is None:
         return {}
     url: str = arg[0]
     fork: bool = arg[1] 
 
-    urls: list = None
+    urls: set = None
     if len(arg) > 2:
         urls = arg[2]
     if not isinstance(urls, list):
-        urls = []
+        urls = set()
     
     file: str = None
     if len(arg) > 3:
@@ -279,12 +279,8 @@ def parse_links(arg: tuple) -> list:
     
     if url is None or not isinstance(url, str):
         return urls
-    
-    if url in urls:
-        print(f'Ignored {url}')
-        return urls
 
-    print(url)
+    print(f'{url}[Accepted]')
     res: requests.Response = None
     headers = requests.utils.default_headers()
     headers.update(
@@ -337,17 +333,14 @@ def parse_links(arg: tuple) -> list:
             link = f'{my_root}/{link.lstrip("/")}'.rstrip('/')
         link = link.rstrip('/')
         if not url_validate(link):
-            urls.append(link)
-            continue
-
-        if link.upper() == url.upper():
             continue
 
         with locker:
             if link in urls:
+                print(f'{url}[Ignored]')
                 continue
-            urls.append(link)
-            print(link)
+            urls.add(link)
+            print(f'{link}[Accepted]')
         
         if file is not None:
             try:
@@ -358,7 +351,7 @@ def parse_links(arg: tuple) -> list:
                 pass
         
         if fork:
-            urls += parse_links((link, fork, urls, file, locker))
+            urls |= parse_links((link, fork, urls, file, locker))
     return urls
 
 if __name__=="__main__":
@@ -386,7 +379,7 @@ if __name__=="__main__":
 
     opt: Option = None
     arg: str = ''
-    urls: list = []
+    specified_urls: set = set()
     
     for index in range(1, len(sys.argv)):
         arg = sys.argv[index]
@@ -408,7 +401,7 @@ if __name__=="__main__":
                     exit(1)                
         if arg is not None:
             if url_validate(arg):
-                urls.append(arg)
+                specified_urls.add(arg)
             else:
                 print(f'Invalid url:{arg}')
                 exit(1)
@@ -432,7 +425,7 @@ if __name__=="__main__":
                 if opt.has_value:
                     opt.print_keyvalue(2)
             print()
-    ignore_urls: list = []
+    ignore_urls: set = set()
     if _exclude.has_value and os.path.exists(_exclude.value):
         try:
             with open(_exclude.value,'r') as txt_file: 
@@ -441,13 +434,15 @@ if __name__=="__main__":
                     line = line.strip().rstrip('/')
                     if url_validate(line):
                         if line not in ignore_urls:
-                            ignore_urls.append(line)
+                            ignore_urls.add(line)
                     else:
                         print(f'[W]:url is not valid:{line}')
                     line = txt_file.readline()
         except Exception as ex:
             print(f'Cannot open file:{_exclude.value}')
             exit(1)
+    
+    urls: list = list(specified_urls - ignore_urls)
     if len(urls) <= 0:
         print('No url to browse')
         exit(0)
