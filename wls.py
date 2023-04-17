@@ -4,7 +4,7 @@ import enum
 import bs4
 import requests
 import concurrent.futures
-from threading import Lock
+import threading
 import multiprocessing
 
 class Option:
@@ -247,29 +247,30 @@ def url_root(url: str) -> str:
 
     return url
     
-def url_hostname(url: str) -> str:
+def url_domainname(url: str) -> str:
     if not isinstance(url, str):
         return ''
-    scheme: str = ''
     if url.upper().startswith('http://www.'.upper()):
         url = url[len('http://www.'):]
-        scheme = 'http://www.'
     elif url.upper().startswith('https://www.'.upper()):
         url = url[len('https://www.'):]
-        scheme = 'https://www.'
     elif url.upper().startswith('http://'.upper()):
         url = url[len('http://'):]
-        scheme = 'http://'
     elif url.upper().startswith('https://'.upper()):
         url = url[len('https://'):]
-        scheme = 'https://'
     elif url.upper().startswith('www.'.upper()):
         url = url[len('www.'):]
-        scheme = 'www.'
     url = url.rstrip('/').lstrip('/')
     tmp: list = url.split('/')
     url = tmp[0].rstrip('/').lstrip('/')
-    return url
+    parts: list = url.split('.')
+    if len(parts) <= 2:
+        return url
+    
+    while len(parts) > 2:
+        parts.remove(parts[0])
+
+    return '.'.join(parts)
 
 def parse_links(arg: tuple) -> set:
     if arg is None:
@@ -293,13 +294,13 @@ def parse_links(arg: tuple) -> set:
     if len(arg) > 3:
         file = arg[3]
     
-    locker: Lock = None
+    locker: threading.Lock = None
     if len(arg) > 4:
         locker = arg[4]
         if locker is None:
-            locker = multiprocessing.Manager().Lock()
+            locker = threading.Lock()
     else:
-        locker = multiprocessing.Manager().Lock()
+        locker = threading.Lock()
 
     _verbose: bool = False
     if len(arg) > 5:
@@ -389,21 +390,21 @@ def parse_links(arg: tuple) -> set:
             link = f'{my_root}/{link.lstrip("/")}'.rstrip('/')
         link = link.rstrip('/')
         if not url_validate(link):
-            print(f'{link}[Invalid]')
+            print(f'{link} [Invalid]')
             continue
-
+        
         if fork == ForkMode.DOMAIN:
-            my_root: str = url_root(url)
-            if not link.upper().startswith(my_root.upper()):
-                print(f'{link}[OtherDomain]')
+            my_domain: str = url_domainname(url)
+            if my_domain.upper() not in link.upper():
+                print(f'{link} [OtherDomain]')
                 continue
 
         with locker:
             if link in urls:
-                print(f'{link}[Ignored]')
+                print(f'{link} [Ignored]')
                 continue
             urls.add(link)
-            print(f'{link}[Accepted]')
+            print(f'{link} [Accepted]')
         
         if file is not None:
             try:
@@ -417,7 +418,7 @@ def parse_links(arg: tuple) -> set:
             urls |= parse_links((link, fork, urls, file, locker, _verbose))
     return urls
 
-class ForkMode(enum.Enum):
+class ForkMode(enum.IntEnum):
     NONE=0
     DOMAIN=1,
     ALL=2
@@ -527,10 +528,9 @@ if __name__=="__main__":
             except Exception as ex:
                 print(f'Cannot remove existing file:{_output.value}')
                 exit(1)
-    
-    manager: multiprocessing.Manager = multiprocessing.Manager()
-    locker: multiprocessing.Lock = manager.Lock()
-    with concurrent.futures.ProcessPoolExecutor(max_workers=max(2,min(61, len(specified_urls)))) as executor:
+
+    locker: threading.Lock = threading.Lock()
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max(2,min(61, len(specified_urls)))) as executor:
         futures = { executor.submit(parse_links, (url, _fork.value if _fork.has_value else False, ignore_urls, _output.value if _output.has_value else None, locker, _verbose.value if _verbose.has_value else False, _proxy.value if _proxy.has_value else None)) : url for url in specified_urls}
         url: str = ''
         for future in concurrent.futures.as_completed(futures):
