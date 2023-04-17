@@ -386,16 +386,19 @@ def parse_links(arg: tuple) -> set:
         link = link.strip()
         if (not link.upper().startswith('http://'.upper())) and (not  link.upper().startswith('https://'.upper())) and (not  link.upper().startswith('www.'.upper())):
             if link.startswith('#'):
+                urls.add(link)  #Add to mark as already parsed
                 continue
             link = f'{my_root}/{link.lstrip("/")}'.rstrip('/')
         link = link.rstrip('/')
         if not url_validate(link):
+            urls.add(link) #Add to mark as already parsed
             print(f'{link} [Invalid]')
             continue
         
         if fork == ForkMode.DOMAIN:
             my_domain: str = url_domainname(url)
             if my_domain.upper() not in link.upper():
+                urls.add(link) #Add to mark as already parsed
                 print(f'{link} [OtherDomain]')
                 continue
 
@@ -403,16 +406,16 @@ def parse_links(arg: tuple) -> set:
             if link in urls:
                 print(f'{link} [Ignored]')
                 continue
+            
             urls.add(link)
             print(f'{link} [Accepted]')
         
-        if file is not None:
-            try:
-                with locker:
+            if file is not None:
+                try:
                     with open(file,'a') as txt_file:
                         txt_file.write(f'{link}\n')
-            except Exception as ex:
-                pass
+                except Exception as ex:
+                    print(f'Cannot open file to write url:{ex}')
         
         if fork != ForkMode.NONE:
             urls |= parse_links((link, fork, urls, file, locker, _verbose))
