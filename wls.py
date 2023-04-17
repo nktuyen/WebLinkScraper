@@ -292,7 +292,11 @@ def parse_links(arg: tuple) -> set:
     try:
         res = requests.get(url, timeout=5, allow_redirects=False)
     except requests.ConnectionError as err:
-        res = requests.get(url, timeout=5, headers=headers, allow_redirects=False)
+        try:
+            res = requests.get(url, timeout=5, headers=headers, allow_redirects=False)
+        except Exception as ex2:
+            if _verbose:
+                print(f'Exception:{ex2}')
     except Exception as ex:
         print(f'Exception:{ex}')
         return urls
