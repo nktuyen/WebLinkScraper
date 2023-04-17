@@ -276,7 +276,13 @@ def parse_links(arg: tuple) -> set:
             locker = multiprocessing.Manager().Lock()
     else:
         locker = multiprocessing.Manager().Lock()
-    
+
+    _domain_tree_only: bool = False
+    if len(arg) > 5:
+        _domain_tree_only = arg[5]
+        if _domain_tree_only is None:
+            _domain_tree_only = False
+
     if url is None or not isinstance(url, str):
         return urls
     if url not in urls:
@@ -343,11 +349,18 @@ def parse_links(arg: tuple) -> set:
             link = f'{my_root}/{link.lstrip("/")}'.rstrip('/')
         link = link.rstrip('/')
         if not url_validate(link):
+            print(f'{link}[Invalid]')
             continue
+
+        if _domain_tree_only:
+            my_root: str = url_root(url)
+            if not link.upper().startswith(my_root.upper()):
+                print(f'{link}[OtherDomain]')
+                continue
 
         with locker:
             if link in urls:
-                print(f'{url}[Ignored]')
+                print(f'{link}[Ignored]')
                 continue
             urls.add(link)
             print(f'{link}[Accepted]')
@@ -361,7 +374,7 @@ def parse_links(arg: tuple) -> set:
                 pass
         
         if fork:
-            urls |= parse_links((link, fork, urls, file, locker))
+            urls |= parse_links((link, fork, urls, file, locker, _domain_tree_only))
     return urls
 
 if __name__=="__main__":
@@ -369,12 +382,16 @@ if __name__=="__main__":
     _fork: BooleanOption = BooleanOption("--fork", False, "Also browse any encountered link", True)
     _exclude: StringOption = StringOption("--exclude", False, "Input file which contains list of URL(s) will be excluded", None)
     _output: StringOption = StringOption("--output", False, "Output file which parsed URL(s) will be written to", None)
+    _update: BooleanOption = BooleanOption("--update", False, f'Update mode\nWhen {_output.keyword} is specified\nFound URL(s) will be appended to output file', True)
+    _domain_tree: BooleanOption = BooleanOption("--domain-tree", False, "Only browse URL(s) in the same domain tree", False)
 
     option_list : list = [
         _verbose,
         _fork,
         _exclude,
-        _output
+        _output,
+        _update,
+        _domain_tree
     ]
     def usage(indent: int = 2, left_width: int = 21):
         print(f'Usage: {os.path.basename(sys.argv[0])} [OPTIONS] urls')
@@ -456,11 +473,19 @@ if __name__=="__main__":
         except Exception as ex:
             print(f'Cannot open file:{_exclude.value}')
             exit(1)
+
+    if _update.has_value and _output.has_value and _update.value == False:
+        if os.path.exists(_output.value):
+            try:
+                os.remove(_output.value)
+            except Exception as ex:
+                print(f'Cannot remove existing file:{_output.value}')
+                exit(1)
     
     manager: multiprocessing.Manager = multiprocessing.Manager()
     locker: multiprocessing.Lock = manager.Lock()
     with concurrent.futures.ProcessPoolExecutor(max_workers=max(2,min(61, len(specified_urls)))) as executor:
-        futures = { executor.submit(parse_links, (url, _fork.value if _fork.has_value else False, ignore_urls, _output.value if _output.has_value else None, locker)) : url for url in specified_urls}
+        futures = { executor.submit(parse_links, (url, _fork.value if _fork.has_value else False, ignore_urls, _output.value if _output.has_value else None, locker, _domain_tree.value if _domain_tree.has_value else False)) : url for url in specified_urls}
         url: str = ''
         for future in concurrent.futures.as_completed(futures):
             url = futures[future]
