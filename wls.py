@@ -143,14 +143,25 @@ class BooleanOption(Option):
         super().__init__(keyword, bool, name, required, desc, default_value,  [True, False, 0, 1, 'True', 'False', '0', '1', 'Yes', 'No'])
 
     def _internal_validate(self, val: str) -> bool:
-        return super()._internal_validate(val)
+        if not super()._internal_validate(val):
+            return False
+        return False
     
 class IntegerOption(Option):
     def __init__(self, keyword: str, name: str = '', required: bool = False, desc: str = '', default_value: int = 0, allow_values: list = None) -> None:
         super().__init__(keyword, int, name, required, desc, default_value, allow_values)
 
     def _internal_validate(self, val: str) -> int:
-        return super()._internal_validate(val)
+        if not super()._internal_validate(val):
+            return None
+        for ch in val:
+            if not ch.isnumeric():
+                return None
+        int_val: int = int(val)
+        if int_val > sys.maxsize:
+            return None
+        
+        return int_val
 
 class StringOption(Option):
     def __init__(self, keyword: str, name: str = '', required: bool = False, desc: str = '', default_value: str = '', allow_values: list = None) -> None:
@@ -162,7 +173,7 @@ class StringOption(Option):
         return super()._internal_validate(val)
     
 
-def url_validate(input_url: str, browse: bool = False) -> bool:
+def url_validate(input_url: str) -> bool:
         if not isinstance(input_url, str):
             return False
         url: str = input_url
@@ -198,27 +209,7 @@ def url_validate(input_url: str, browse: bool = False) -> bool:
         for ch in host:
             if not ch.isalnum() and ch not in valids:
                 return False
-
-        if browse:
-            res: requests.Response = None
-            headers = requests.utils.default_headers()
-            headers.update(
-                {
-                    'User-Agent': 'Mozilla/5.0',
-                }
-            )
-            try:
-                res = requests.get(input_url, timeout=5, allow_redirects=False)
-            except requests.ConnectionError:
-                res = requests.get(input_url, timeout=5, headers=headers, allow_redirects=False)
-            except Exception as ex:
-                print(f'Exception:{ex}')
-                return False
             
-            if res.status_code != 200:
-                return False
-            if 'text/html' not in res.headers['content-type']:
-                return False
         return True
 
 def url_root(url: str) -> str:
@@ -312,6 +303,12 @@ def parse_links(arg: tuple) -> set:
     if len(arg) > 6:
         _proxy = arg[6]
 
+    _timeout: int = 60
+    if len(arg) > 7:
+        _timeout = arg[7]
+        if not isinstance(_timeout, int):
+            _timeout = int(60)
+
     if url is None or not isinstance(url, str):
         return urls
     
@@ -333,10 +330,10 @@ def parse_links(arg: tuple) -> set:
             'ftp':  f'"{_proxy}"'
         }
     try:
-        res = requests.get(url, timeout=5, allow_redirects=False, proxies=_proxies)
+        res = requests.get(url, timeout=_timeout, allow_redirects=False, proxies=_proxies)
     except requests.ConnectionError as err:
         try:
-            res = requests.get(url, timeout=5, headers=headers, allow_redirects=False, proxies=_proxies)
+            res = requests.get(url, timeout=_timeout, headers=headers, allow_redirects=False, proxies=_proxies)
         except Exception as ex2:
             if _verbose:
                 print(f'Exception:{ex2}')
@@ -349,6 +346,7 @@ def parse_links(arg: tuple) -> set:
         return urls
     
     if res.status_code != 200:
+        print(f'{res.status_code}:{res.reason}')
         return urls
 
     content_type: str =  'text/html'
@@ -434,6 +432,7 @@ if __name__=="__main__":
     _output: StringOption = StringOption("--output", default_value=None, name='Output file')
     _update: BooleanOption = BooleanOption("--update", default_value=True, name='Update mode')
     _proxy: StringOption = StringOption("--proxy", default_value=None, name='Proxy')
+    _timeout: IntegerOption = IntegerOption("--timeout", default_value=60, name="Request Timeout", allow_values=[range(0,180)])
 
     option_list : list = [
         _verbose,
@@ -441,7 +440,8 @@ if __name__=="__main__":
         _exclude,
         _output,
         _update,
-        _proxy
+        _proxy,
+        _timeout
     ]
     def usage(indent: int = 2, left_width: int = 21):
         print(f'Usage: {os.path.basename(sys.argv[0])} [OPTIONS] URLS')
@@ -534,7 +534,7 @@ if __name__=="__main__":
 
     locker: threading.Lock = threading.Lock()
     with concurrent.futures.ThreadPoolExecutor(max_workers=max(2,min(61, len(specified_urls)))) as executor:
-        futures = { executor.submit(parse_links, (url, _fork.value if _fork.has_value else False, ignore_urls, _output.value if _output.has_value else None, locker, _verbose.value if _verbose.has_value else False, _proxy.value if _proxy.has_value else None)) : url for url in specified_urls}
+        futures = { executor.submit(parse_links, (url, _fork.value if _fork.has_value else False, ignore_urls, _output.value if _output.has_value else None, locker, _verbose.value if _verbose.has_value else False, _proxy.value if _proxy.has_value else None, _timeout.value if _timeout.has_value else 60)) : url for url in specified_urls}
         url: str = ''
         for future in concurrent.futures.as_completed(futures):
             url = futures[future]
