@@ -1,6 +1,6 @@
 import sys
 import os
-import re
+import enum
 import bs4
 import requests
 import concurrent.futures
@@ -8,7 +8,7 @@ from threading import Lock
 import multiprocessing
 
 class Option:
-    def __init__(self, keyword: str, type = str, required: bool = False, desc: str = '', default_value = None, allow_values: list = None, allow_none: bool = False) -> None:
+    def __init__(self, keyword: str, type = str, name: str = '', required: bool = False, desc: str = '', default_value = None, allow_values: list = None, allow_none: bool = False) -> None:
         self._key = keyword
         self._type = type
         self._required: bool = required
@@ -18,6 +18,7 @@ class Option:
         self._value = None
         self._defval = default_value
         self._allow_none: bool = allow_none
+        self._name: str = name
     
     @property
     def keyword(self) -> str:
@@ -34,6 +35,14 @@ class Option:
     @type.setter
     def type(self, type):
         self._type = type
+
+    @property
+    def name(self) -> str:
+        return self._name
+    
+    @name.setter
+    def name(self, val: str):
+        self._name = val
 
     @property
     def required(self) -> bool:
@@ -81,20 +90,29 @@ class Option:
         return self._has_value
 
     def print_help(self, indent: int = 0, left_width: int = 21):
-        desc_list: list = self._desc.split('\n')
+        desc_list: list = []
+        if self._desc is not None and len(self._desc) > 0:
+            desc_list = self._desc.split('\n')
         left_width = max(0, left_width)
         indent = max(0, indent)
         left: str = '{string:{width}}'.format(string=f'{self._key} {"(Required)" if self._required else "[Optional]"}', width=left_width)
-        print(f'{" " * indent}{left}: {desc_list[0]}')
-        if len(desc_list) > 1:
-            for idx in range(1, len(desc_list)):
+        begin: int = 0
+        right: str = self._name
+        if self._name is None or len(self._name) <= 0:
+            right = desc_list[0]
+            begin = 1
+        print(f'{" " * indent}{left}: {right}')
+        if len(desc_list) > begin:
+            for idx in range(begin, len(desc_list)):
                 desc: str = desc_list[idx]
                 print(f'{" " * (indent + left_width)}: {desc}')
+        print(f'{" " * (indent + left_width)}: Default value is {self._defval}')
+        print()
     
-    def print_keyvalue(self, indent: int = 0, left_width: int = 12) -> str:
+    def print_namevalue(self, indent: int = 0, left_width: int = 21) -> str:
         indent = max(0, indent)
         left_width = max(0, left_width)
-        left: str = '{string:{width}}'.format(string=self._key, width=left_width)
+        left: str = '{string:{width}}'.format(string=self._key if self._name is None or len(self._name) <= 0 else self._name, width=left_width)
         print(f'{" " * indent}{left}: {self._value}')
     
     def reset(self):
@@ -121,22 +139,22 @@ class Option:
         return True
     
 class BooleanOption(Option):
-    def __init__(self, keyword: str, required: bool = False, desc: str = '', defval: bool = False) -> None:
-        super().__init__(keyword, bool, required, desc, defval,  [True, False, 0, 1, 'True', 'False', '0', '1', 'Yes', 'No'])
+    def __init__(self, keyword: str, name: str = '', required: bool = False, desc: str = '', default_value: bool = False) -> None:
+        super().__init__(keyword, bool, name, required, desc, default_value,  [True, False, 0, 1, 'True', 'False', '0', '1', 'Yes', 'No'])
 
     def _internal_validate(self, val: str) -> bool:
         return super()._internal_validate(val)
     
 class IntegerOption(Option):
-    def __init__(self, keyword: str, required: bool = False, desc: str = '', defval: int = 0, allow_values: list = None) -> None:
-        super().__init__(keyword, int, required, desc, defval, allow_values)
+    def __init__(self, keyword: str, name: str = '', required: bool = False, desc: str = '', default_value: int = 0, allow_values: list = None) -> None:
+        super().__init__(keyword, int, name, required, desc, default_value, allow_values)
 
     def _internal_validate(self, val: str) -> int:
         return super()._internal_validate(val)
 
 class StringOption(Option):
-    def __init__(self, keyword: str, required: bool = False, desc: str = '', defval: str = '', allow_values: list = None) -> None:
-        super().__init__(keyword, str, required, desc, defval, allow_values)
+    def __init__(self, keyword: str, name: str = '', required: bool = False, desc: str = '', default_value: str = '', allow_values: list = None) -> None:
+        super().__init__(keyword, str, name, required, desc, default_value, allow_values)
     
     def _internal_validate(self, val: str) -> str:
         if not isinstance(val, str):
@@ -257,7 +275,13 @@ def parse_links(arg: tuple) -> set:
     if arg is None:
         return {}
     url: str = arg[0]
-    fork: bool = arg[1] 
+    fork: ForkMode = ForkMode.NONE
+    try:
+        fork = int(arg[1])
+        if fork is None:
+            fork = ForkMode.NONE
+    except:
+        fork = ForkMode.NONE
 
     urls: set = None
     if len(arg) > 2:
@@ -277,14 +301,19 @@ def parse_links(arg: tuple) -> set:
     else:
         locker = multiprocessing.Manager().Lock()
 
-    _domain_tree_only: bool = False
+    _verbose: bool = False
     if len(arg) > 5:
-        _domain_tree_only = arg[5]
-        if _domain_tree_only is None:
-            _domain_tree_only = False
+        _verbose = arg[5]
+        if _verbose is None:
+            _verbose = False
+
+    _proxy: str = None
+    if len(arg) > 6:
+        _proxy = arg[6]
 
     if url is None or not isinstance(url, str):
         return urls
+    
     if url not in urls:
         with locker:
             urls.add(url)
@@ -295,16 +324,27 @@ def parse_links(arg: tuple) -> set:
             'User-Agent': 'Mozilla/5.0',
         }
     )
+    _proxies: dict = None
+    if _proxy is not None:
+        _proxies = {
+            'http': f'"{_proxy}"',
+            'https':  f'"{_proxy}"',
+            'ftp':  f'"{_proxy}"'
+        }
     try:
-        res = requests.get(url, timeout=5, allow_redirects=False)
+        res = requests.get(url, timeout=5, allow_redirects=False, proxies=_proxies)
     except requests.ConnectionError as err:
         try:
-            res = requests.get(url, timeout=5, headers=headers, allow_redirects=False)
+            res = requests.get(url, timeout=5, headers=headers, allow_redirects=False, proxies=_proxies)
         except Exception as ex2:
             if _verbose:
                 print(f'Exception:{ex2}')
+
     except Exception as ex:
         print(f'Exception:{ex}')
+        return urls
+    
+    if res is None:
         return urls
     
     if res.status_code != 200:
@@ -352,7 +392,7 @@ def parse_links(arg: tuple) -> set:
             print(f'{link}[Invalid]')
             continue
 
-        if _domain_tree_only:
+        if fork == ForkMode.DOMAIN:
             my_root: str = url_root(url)
             if not link.upper().startswith(my_root.upper()):
                 print(f'{link}[OtherDomain]')
@@ -373,17 +413,23 @@ def parse_links(arg: tuple) -> set:
             except Exception as ex:
                 pass
         
-        if fork:
-            urls |= parse_links((link, fork, urls, file, locker, _domain_tree_only))
+        if fork != ForkMode.NONE:
+            urls |= parse_links((link, fork, urls, file, locker, _verbose))
     return urls
 
+class ForkMode(enum.Enum):
+    NONE=0
+    DOMAIN=1,
+    ALL=2
+
 if __name__=="__main__":
-    _verbose: BooleanOption = BooleanOption("--verbose", False, "Verbose output", True)
-    _fork: BooleanOption = BooleanOption("--fork", False, "Also browse any encountered link", True)
-    _exclude: StringOption = StringOption("--exclude", False, "Input file which contains list of URL(s) will be excluded", None)
-    _output: StringOption = StringOption("--output", False, "Output file which parsed URL(s) will be written to", None)
-    _update: BooleanOption = BooleanOption("--update", False, f'Update mode\nWhen {_output.keyword} is specified\nFound URL(s) will be appended to output file', True)
-    _domain_tree: BooleanOption = BooleanOption("--domain-tree", False, "Only browse URL(s) in the same domain tree", False)
+    _verbose: BooleanOption = BooleanOption("--verbose", default_value=True, name='Verbose output')
+    _fork: IntegerOption = IntegerOption("--fork", default_value=0, name='Fork mode', allow_values=[ForkMode.NONE, ForkMode.DOMAIN, ForkMode.ALL], 
+                                         desc='Accepted values:\n  0=No fork\n  1=Only fork URL(s) within the same domain\n  2=Fork all found URL(s)')
+    _exclude: StringOption = StringOption("--exclude", default_value=None, name='Excluded file')
+    _output: StringOption = StringOption("--output", default_value=None, name='Output file')
+    _update: BooleanOption = BooleanOption("--update", default_value=True, name='Update mode')
+    _proxy: StringOption = StringOption("--proxy", default_value=None, name='Proxy')
 
     option_list : list = [
         _verbose,
@@ -391,10 +437,10 @@ if __name__=="__main__":
         _exclude,
         _output,
         _update,
-        _domain_tree
+        _proxy
     ]
     def usage(indent: int = 2, left_width: int = 21):
-        print(f'Usage: {os.path.basename(sys.argv[0])} [OPTIONS] urls')
+        print(f'Usage: {os.path.basename(sys.argv[0])} [OPTIONS] URLS')
         print('{}{string:{width}}: URL(s) to browse'.format(" " * indent, string='URLS', width=left_width))
         print('  [OPTIONS]')
         for opt in option_list:
@@ -455,7 +501,7 @@ if __name__=="__main__":
             print(f'  [OPTIONS]')
             for opt in option_list:
                 if opt.has_value:
-                    opt.print_keyvalue(2)
+                    opt.print_namevalue(2)
             print()
     ignore_urls: set = set()
     if _exclude.has_value and os.path.exists(_exclude.value):
@@ -485,7 +531,7 @@ if __name__=="__main__":
     manager: multiprocessing.Manager = multiprocessing.Manager()
     locker: multiprocessing.Lock = manager.Lock()
     with concurrent.futures.ProcessPoolExecutor(max_workers=max(2,min(61, len(specified_urls)))) as executor:
-        futures = { executor.submit(parse_links, (url, _fork.value if _fork.has_value else False, ignore_urls, _output.value if _output.has_value else None, locker, _domain_tree.value if _domain_tree.has_value else False)) : url for url in specified_urls}
+        futures = { executor.submit(parse_links, (url, _fork.value if _fork.has_value else False, ignore_urls, _output.value if _output.has_value else None, locker, _verbose.value if _verbose.has_value else False, _proxy.value if _proxy.has_value else None)) : url for url in specified_urls}
         url: str = ''
         for future in concurrent.futures.as_completed(futures):
             url = futures[future]
