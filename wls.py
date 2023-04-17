@@ -262,7 +262,7 @@ def parse_links(arg: tuple) -> set:
     urls: set = None
     if len(arg) > 2:
         urls = arg[2]
-    if not isinstance(urls, list):
+    if not isinstance(urls, set):
         urls = set()
     
     file: str = None
@@ -279,8 +279,9 @@ def parse_links(arg: tuple) -> set:
     
     if url is None or not isinstance(url, str):
         return urls
-
-    print(f'{url}[Accepted]')
+    if url not in urls:
+        with locker:
+            urls.add(url)
     res: requests.Response = None
     headers = requests.utils.default_headers()
     headers.update(
@@ -298,8 +299,13 @@ def parse_links(arg: tuple) -> set:
     
     if res.status_code != 200:
         return urls
-    if 'text/html' not in res.headers['content-type']:
-        return urls
+
+    content_type: str =  'text/html'
+    if 'content-type' in res.headers:
+        content_type =  res.headers['content-type']
+        if content_type.find('text/html') == -1:
+            return urls
+        
     if res.text is None or len(res.text) <= 0:
         return urls
     
@@ -401,10 +407,15 @@ if __name__=="__main__":
                     exit(1)                
         if arg is not None:
             if url_validate(arg):
-                specified_urls.add(arg)
+                specified_urls.add(arg.rstrip('/'))
             else:
                 print(f'Invalid url:{arg}')
                 exit(1)
+
+    if len(specified_urls) <= 0:
+        print('No URL specified')
+        exit(1)
+        
     require_reinput: bool = False
     for opt in option_list:
         if opt.required and not opt.has_value:
@@ -442,15 +453,10 @@ if __name__=="__main__":
             print(f'Cannot open file:{_exclude.value}')
             exit(1)
     
-    urls: list = list(specified_urls - ignore_urls)
-    if len(urls) <= 0:
-        print('No url to browse')
-        exit(0)
-    
     manager: multiprocessing.Manager = multiprocessing.Manager()
     locker: multiprocessing.Lock = manager.Lock()
-    with concurrent.futures.ProcessPoolExecutor(max_workers=max(2,min(61, len(urls)))) as executor:
-        futures = { executor.submit(parse_links, (url, _fork.value if _fork.has_value else False, ignore_urls, _output.value if _output.has_value else None, locker)) : url for url in urls}
+    with concurrent.futures.ProcessPoolExecutor(max_workers=max(2,min(61, len(specified_urls)))) as executor:
+        futures = { executor.submit(parse_links, (url, _fork.value if _fork.has_value else False, ignore_urls, _output.value if _output.has_value else None, locker)) : url for url in specified_urls}
         url: str = ''
         for future in concurrent.futures.as_completed(futures):
             url = futures[future]
